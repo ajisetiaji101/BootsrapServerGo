@@ -2,9 +2,14 @@ package bootstrap
 
 import (
 	"bootstrap-server/pkg"
+	"bootstrap-server/pkg/hmac"
 	"bufio"
+	"bytes"
 	"fmt"
 	"net"
+	"net/http"
+	"os"
+	"time"
 
 	"github.com/bytedance/sonic"
 )
@@ -55,7 +60,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 	// Handle sesuai tipe request
 	switch req.Type {
 	case "REGISTER":
-		s.registerPeer(req.Payload)
+		s.registerPeer(conn, req.Payload)
 	case "GET_PEERS":
 		s.getAllPeers(conn)
 	case "REMOVE":
@@ -66,7 +71,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 }
 
 // registerPeer menambahkan peer baru ke daftar.
-func (s *Server) registerPeer(peer []byte) {
+func (s *Server) registerPeer(conn net.Conn, peer []byte) {
 	var myPeer Peer
 	err := sonic.Unmarshal(peer, &myPeer)
 	if err != nil {
@@ -74,14 +79,70 @@ func (s *Server) registerPeer(peer []byte) {
 		return
 	}
 
-	fmt.Println(myPeer)
+	fmt.Println("req peer", myPeer)
+
+	// Generate HMAC
+	generatedHmac := hmac.GenerateHMAC(os.Getenv("HMAC_KEY_BLOCKCHAIN_ELECTION"), time.Now().Unix())
+
+	fmt.Printf("Generated HMAC: %s\n", generatedHmac)
+
+	// Create the payload to be sent to the external server
+	url := os.Getenv("EXTERNAL_API_URL") + "/whitelistip"
+	payload := fmt.Sprintf(`{"ip_address": "%s"}`, myPeer.Address)
+
+	fmt.Println("Payload:", payload)
+
+	//generate timestamp
+	timestamp := fmt.Sprintf("%d", time.Now().Unix())
+
+	// Create the HTTP request
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer([]byte(payload)))
+	req.Header.Set("X-HMAC", generatedHmac)
+	// Set header untuk timestamp
+	req.Header.Set("X-Timestamp", fmt.Sprintf("%d", time.Now().Unix()))
+
+	req.Header.Set("Idempotency-Key", timestamp)
+
+	if err != nil {
+		fmt.Println("Error creating HTTP request:", err)
+		return
+	}
+
+	// Set Content-Type header
+	req.Header.Set("Content-Type", "application/json")
+
+	// Create a new HTTP client and send the request
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Println("Error sending HTTP request:", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	// Check the status code of the response
+	if resp.StatusCode != http.StatusOK {
+		fmt.Println("Failed to register peer on external server")
+
+		s.sentMessage(resp.StatusCode, conn)
+		return
+	}
+
+	// Optional: Log or process the response body (if needed)
+	// Here, we simply print the response for now
+	fmt.Println("Registerd peer on whitelist server")
 
 	success, _ := s.pm.RegisterPeer(myPeer)
 
 	if !success {
 		fmt.Println("Failed to register peer:", peer)
+		s.sentMessage(500, conn)
 	} else {
+
+		fmt.Println("masuk sini")
 		s.broadcastPeers(myPeer, "register")
+
+		s.sentMessage(200, conn)
 	}
 }
 
@@ -180,4 +241,28 @@ func (s *Server) notifyShutdownPeer(existingPeer, newPeerAddress string) {
 		return
 	}
 	writer.Flush()
+}
+
+func (s *Server) sentMessage(status int, conn net.Conn) {
+
+	fmt.Println("status", status)
+
+	if status == 200 {
+
+		fmt.Println("masuk sini 200")
+
+		message := []byte("Your IP address is Registered\n")
+
+		conn.Write(message)
+	} else {
+
+		fmt.Println("masuk sini 500")
+
+		message := []byte("Failed to register IP address\n")
+
+		fmt.Println("message", message)
+
+		conn.Write(message)
+
+	}
 }
