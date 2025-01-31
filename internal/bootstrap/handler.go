@@ -87,7 +87,7 @@ func (s *Server) registerPeer(conn net.Conn, peer []byte) {
 	fmt.Printf("Generated HMAC: %s\n", generatedHmac)
 
 	// Create the payload to be sent to the external server
-	url := os.Getenv("EXTERNAL_API_URL") + "/whitelistip"
+	url := "http://localhost:8081/whitelistip"
 	payload := fmt.Sprintf(`{"ip_address": "%s"}`, myPeer.Address)
 
 	fmt.Println("Payload:", payload)
